@@ -1,0 +1,12 @@
+﻿<?xml version='1.0' encoding='utf-8'?>
+<SettingsFile xmlns="http://schemas.microsoft.com/VisualStudio/2004/01/settings" CurrentProfile="(Default)" GeneratedClassNamespace="WPWebSocketsCmd.Properties" GeneratedClassName="Settings">
+  <Profiles />
+  <Settings>
+    <Setting Name="Port" Type="System.Int32" Scope="User">
+      <Value Profile="(Default)">8880</Value>
+    </Setting>
+    <Setting Name="WebRoot" Type="System.String" Scope="User">
+      <Value Profile="(Default)">C:\Data\Projects\WPWebSocket\WPWebSocketsCmd</Value>
+    </Setting>
+  </Settings>
+</SettingsFile>
