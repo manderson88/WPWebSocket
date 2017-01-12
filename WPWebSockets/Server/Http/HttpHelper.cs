@@ -17,7 +17,7 @@ namespace WPWebSockets.Server.Http
             {
                 if (offset >= length)
                 {
-                    throw new EntityTooLargeException("Http header message too large to fit in buffer (16KB)");
+                    //throw new EntityTooLargeException("Http header message too large to fit in buffer (16KB)");
                 }
 
                 bytesRead = stream.Read(buffer, offset, length - offset);

@@ -1,5 +1,7 @@
 ﻿using System.IO;
 using System.Text;
+using System.Diagnostics;
+using System;
 
 namespace WPWebSockets.Common
 {
@@ -51,7 +53,13 @@ namespace WPWebSockets.Common
 
                 memoryStream.Write(payload, 0, payload.Length);
                 byte[] buffer = memoryStream.ToArray();
-                _stream.Write(buffer, 0, buffer.Length);
+                try
+                {
+                    _stream.Write(buffer, 0, buffer.Length);
+                }
+                catch (System.ObjectDisposedException ode) { Debug.Print(ode.Message); }
+                catch (System.IO.IOException ioe) { Debug.Print(ioe.Message); }
+                //catch (Exception e) { Debug.Print(e.message); }
             }
         }
 

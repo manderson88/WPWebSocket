@@ -2,6 +2,7 @@
 using System.IO;
 using System.Net;
 using System.Net.Security;
+using System.Web;
 
 namespace WPWebSocketsCmd
 {
@@ -10,7 +11,7 @@ namespace WPWebSocketsCmd
         private WebRequest request;
         private string m_userName { get; set; }
         private string m_password { get; set; }
-
+        private string m_authCode { get; set; }
 
         public String Status { get; set; }
         public MyWebRequest() { }
@@ -18,7 +19,7 @@ namespace WPWebSocketsCmd
         {
         }
 
-        public MyWebRequest(string url, string method)
+        public MyWebRequest(string url, string method,string authCode)
             : this(url)
         {
 
@@ -31,12 +32,32 @@ namespace WPWebSocketsCmd
             {
                 throw new Exception("Invalid Method Type");
             }
+            //set the  authorization at this stage.
+            m_authCode = authCode;
         }
         public void SetUserInfo(string user, string pwd)
         {
             m_userName = user;
             m_password = pwd;
         }
+
+        /// <summary>
+        /// set the authorization code from caller
+        /// </summary>
+        /// <param name="authCode">Base64 Authorization code.</param>
+        public void SetAuthCode(string authCode)
+        {
+            m_authCode = authCode;
+        }
+        /// <summary>
+        /// get the authorization code for the users.
+        /// </summary>
+        /// <returns></returns>
+        public string GetAuthCode()
+        {
+            return m_authCode;
+        }
+
         /// <summary>
         /// a utility to debug the user name and password passing.
         /// </summary>
@@ -55,16 +76,12 @@ namespace WPWebSocketsCmd
         /// <returns></returns>
         private string getAuthorization(string authType)
         {
-            string authorization;// = "dwg_conv" + "xscdvf!";
-            authorization = m_userName + ":" + m_password;
-            byte[] binaryAuthorization = System.Text.Encoding.UTF8.GetBytes(authorization);
-            authorization = Convert.ToBase64String(binaryAuthorization);
             //            authorization = "Basic " + authorization;
             //authorization = "Basic TkFccXp4Y2R5Ok5vdmE4OENhdHMh";// "Basic ZHdnX2NvbnY6eHNjZHZmIQ==";
-            return authType + " " + authorization;
+            return authType + " " + GetAuthCode();
         }
-        public MyWebRequest(string url, string method, string data)
-            : this(url, method)
+        public MyWebRequest(string url, string method, string data,string authCode)
+            : this(url, method,authCode)
         {
             // Set the ContentType property of the WebRequest.
             request.ContentType = "application/x-www-form-urlencoded";
@@ -72,9 +89,9 @@ namespace WPWebSocketsCmd
             request.ContentLength = 0;// byteArray.Length;
             request.Headers.Add("Authorization", getAuthorization("Basic"));
         }
-        public string SendRequest(string url, string method, string data,string destination)
+        public HttpWebResponse SendRequest(string url, string method, string data,string destination)
         {
-            string rtnMessage = "";
+            HttpWebResponse rtnMessage;
 
             try
             {
@@ -83,7 +100,7 @@ namespace WPWebSocketsCmd
                 {
                     return true;
                 });//hack for  my certificate challenged installation.
-
+                
                 request = WebRequest.Create(url + data);
                 request.Timeout = -1;
                 request.ContentType = "appplication/json";
@@ -98,10 +115,11 @@ namespace WPWebSocketsCmd
                 request.Headers.Add("Authorization", getAuthorization("Basic"));
                 return GetResponse(data.Length > 0,destination);
             }
-            catch (WebException we) { rtnMessage = we.Message; }
-            catch (IOException ie) { rtnMessage = ie.Message; }
-            catch (Exception e) { rtnMessage = e.Message; }
-            return rtnMessage;
+
+            catch (WebException we) { Console.WriteLine(we.Message); }
+            catch (IOException ie) { Console.WriteLine(ie.Message); }
+            catch (Exception e) { Console.WriteLine(e.Message); }
+            return rtnMessage = (HttpWebResponse)request.GetResponse();
         }
         void CopyTo(StreamReader from, FileStream to)
         {
@@ -133,39 +151,47 @@ namespace WPWebSocketsCmd
             return bytesCopied;
         }
 
-        public string GetResponse(bool saveToFile,string destination)
+        public HttpWebResponse GetResponse(bool saveToFile,string destination)
         {
             // Get the original response.
-            WebResponse response = request.GetResponse();
+            HttpWebResponse response = (HttpWebResponse)request.GetResponse();
             //string data = "c:\\temp\\temp.dgn";
             this.Status = ((HttpWebResponse)response).StatusDescription;
+            
+            if ((response.StatusCode == HttpStatusCode.OK)&&(response.ContentType.Equals("application/json")))
+                return response;
 
             // Read the content fully up to the end.
             string responseFromServer;// = reader.ReadToEnd();
-
-            using (Stream reader = response.GetResponseStream())
+            if (response.StatusCode == HttpStatusCode.OK)
             {
-                if (saveToFile)
+                if (response.ContentType.Equals("application/octet-stream"))
+                    saveToFile = true;
+
+                using (Stream reader = response.GetResponseStream())
                 {
-                    int copied;
-                    using (Stream file = File.Create(destination))
+                    if (saveToFile)
                     {
-                        copied = CopyStream(reader, file);
+                        int copied;
+                        using (Stream file = File.Create(destination))
+                        {
+                            copied = CopyStream(reader, file);
+                        }
+                        responseFromServer = copied.ToString();
                     }
-                    responseFromServer = copied.ToString();
+                    else
+                    {
+                        StreamReader sr = new StreamReader(response.GetResponseStream());
+                        responseFromServer = sr.ReadToEnd();
+                        sr.Close();
+                    }
+                    //Console.WriteLine(s);
+                    reader.Close();
                 }
-                else
-                {
-                    StreamReader sr = new StreamReader(response.GetResponseStream());
-                    responseFromServer = sr.ReadToEnd();
-                    sr.Close();
-                }
-                //Console.WriteLine(s);
-                reader.Close();
             }
             response.Close();
 
-            return responseFromServer;
+            return response;
         }
 
     }

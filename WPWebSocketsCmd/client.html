@@ -58,6 +58,7 @@
         // when we press the Send button, send the text to the server
         $('form').submit(function(){
             CONNECTION.send($('#txtBox').val());
+            //CONNECTION.sendJSON($('#txtBox').val());
             $('#txtBox').val('');
             return false;
         });

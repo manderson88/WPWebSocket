@@ -76,6 +76,11 @@ namespace WPWebSocketsCmd
         {
             m_host = host;
         }
+        public void Information(Type type, string msg)
+        {
+            m_host.SetInformation(msg);
+        }
+
         public void Information(Type type, string format, params object[] args)
         {
             m_host.SetInformation(string.Format(format,args));

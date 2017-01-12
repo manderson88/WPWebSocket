@@ -6,6 +6,12 @@ using System.Windows.Forms;
 using Microsoft.Win32;
 using Newtonsoft.Json;
 using BIM = Bentley.Interop.MicroStationDGN;
+using System.IO;
+using System.Net;
+using System.Web;
+using System.Net.Security;
+using System.Text;
+using System.Threading;
 
 namespace WPWebSocketsCmd
 {
@@ -17,9 +23,11 @@ namespace WPWebSocketsCmd
     {
         private static BIM.Application m_App;
         private static Process m_hostApp { get; set; }
-        private static string m_userName { get; set; }
-        private static string m_pwd{get;set;}
-
+        //private static string m_userName { get; set; }
+        //private static string m_pwd{get;set;}
+        private static string m_authCode { get; set; }
+        private static Queue<string> m_messageQueue = new Queue<string>();
+        public static WPWebSocketsCmd.Server.WPSWebSocketService MessageClient { get; set; }
         //private static string s_activeFileName;
         /// <summary>
         /// gets the running instance of the host application
@@ -41,7 +49,7 @@ namespace WPWebSocketsCmd
             {
                 try
                 {
-                    m_App.CadInputQueue.SendKeyin("mdl silentload WPAddin");
+                    m_App.CadInputQueue.SendKeyin("mdl silentload WorkPackageAddin");
                 }
                 catch (Exception e)
                 {
@@ -52,6 +60,15 @@ namespace WPWebSocketsCmd
                 return m_App;
             }
         }
+        private static string GenerateAuthCode(string user,string pwd)
+        {
+            string authorization;// = "dwg_conv" + "xscdvf!";
+            authorization = user + ":" + pwd;
+            byte[] binaryAuthorization = System.Text.Encoding.UTF8.GetBytes(authorization);
+            authorization = Convert.ToBase64String(binaryAuthorization);
+            return authorization;
+        }
+
         public static void SetLoginInfo()
         {
             DialogResult res;
@@ -60,10 +77,20 @@ namespace WPWebSocketsCmd
             res = webForm.ShowDialog(null);
             if (webForm.status == DialogResult.OK)
             {
-                m_userName = webForm.userName;
-                m_pwd = webForm.pwd;
+                string userName = webForm.userName;
+                string pwd = webForm.pwd;
+                m_authCode = GenerateAuthCode(userName, pwd);
             }
             webForm.Dispose();
+        }
+        public static void AddToMessageQueue(string msg)
+        {
+            m_messageQueue.Enqueue(msg);
+        }
+        public static string GetFromMessageQueue()
+        {
+            string msg = m_messageQueue.Dequeue();
+            return msg;
         }
         /// <summary>
         /// Handles the open call.  Pass in the App Id to open the file.
@@ -79,15 +106,22 @@ namespace WPWebSocketsCmd
                 BentleyProductInfo app = GetPath(appID, apps);
 
                 if (app == null)
+                    app = GetPath("MSTN", apps);
+
+                //there is no mstn on the box we quit..
+                if (app == null)
                     return;
 
                 ProcessStartInfo psi = new ProcessStartInfo(app.FullPath);//(@"C:\Program Files (x86)\Bentley\MicroStationV8iSS3\MicroStation\ustation.exe");
                 psi.UseShellExecute = true;
                 psi.Arguments = "\"" + fullFileName + "\"";
                 m_hostApp = Process.Start(psi);
+                m_hostApp.WaitForInputIdle();
+                Thread.Sleep(10 * 1000);
             }
             else
             {
+                Thread.Sleep(10 * 1000);
                 GetMSApp().OpenDesignFile(fullFileName);
             }
          
@@ -100,6 +134,107 @@ namespace WPWebSocketsCmd
                 m_hostApp = null;
             }
         }
+        
+        /// <summary>
+        /// this will take in the file being downloaded and attach it
+        /// to a working file that is the  same name just _ in front.
+        /// </summary>
+        /// <param name="fileName"></param>
+        static void CreateAndOpenWorkFile(string fileName)
+        {
+            BIM.Application msApp = GetMSApp();
+            BIM.Workspace wkspc = msApp.ActiveWorkspace;
+            string workPath = wkspc.ExpandConfigurationVariable("$(MS_DEF)");
+            string workFileName = System.IO.Path.GetFileName(fileName);
+            string workFilePathName = workPath + "_" + workFileName;
+            string seedFileName = wkspc.ConfigurationVariableValue("MS_DESIGNSEED", true);
+            BIM.DesignFile workFile = msApp.CreateDesignFile(seedFileName, workFilePathName,true);
+            //BIM.DesignFile wkFile = msApp.OpenDesignFileForProgram(workFilePathName, true);
+
+            BIM.Attachment att = workFile.DefaultModelReference.Attachments.AddCoincident(fileName, null, "BaseInformation", "Data", true);
+            att.DisplayAsNested = true;
+            att.NestLevel = 99;
+            att.Rewrite();
+            workFile.Save();
+            //OpenFileCmd("OPM", wkFile.FullName,true);
+        }
+
+        public static void LoadIWPCommand(string jsonString)
+        {
+            JavaScriptSerializer oJS = new JavaScriptSerializer();
+            var jsInfo = oJS.Deserialize<dynamic>(jsonString);
+
+                try
+                {
+                    //set the appid for the return information.
+                    GetMSApp().CadInputQueue.SendKeyin("Wpaddin itemset appid " + jsInfo["AppID"]);
+                    
+                    string dataString = jsInfo["DataFile"]["ProjID"] + ":" + jsInfo["DataFile"]["appUUID"] + ":" + jsInfo["DataFile"]["dsName"] + ":" + jsInfo["DataFile"]["docGUID"] + ":" +jsInfo["DataFile"]["fileName"];
+                    GetMSApp().CadInputQueue.SendKeyin("wpaddin itemset datafile " + dataString);
+
+                    foreach (var oComponent in jsInfo["Components"])
+                    {
+                        GetMSApp().CadInputQueue.SendKeyin("itemset create " + oComponent["TagID"]); //the tag id is not good for the available group...
+
+                        foreach (var element in oComponent["Elements"])
+                            GetMSApp().CadInputQueue.SendKeyin("WPAddin itemset build " + oComponent["TagID"] + ":" + "GUID" + ":" + element["GUID"] + ":" + element["EC_SCHEMA_NAME"]);
+
+                        //client.Send("created set " + name);
+                    }
+                }
+                catch (Exception e)
+                {
+                    Debug.Print("exception " + e.Message);
+                }
+                finally
+                {
+                   // client.Send("finished populating the Available items set");
+                    GetMSApp().CadInputQueue.SendKeyin("WPAddin itemset close");
+                }
+                MessageClient.Send("loaded the items");
+        }
+        public static string ProcessIWPJSON(string jsonString,WPWebSocketsCmd.Server.WPSWebSocketService client)
+        {
+            HttpWebResponse status = null;
+            string rtnString = "";
+            JavaScriptSerializer oJS = new JavaScriptSerializer();
+            var jsInfo = oJS.Deserialize<dynamic>(jsonString);
+            //Debug.Print(jsInfo.ToString());
+            MessageClient = client;
+            StringBuilder sb = new StringBuilder(@"https://localhost:3000/loginToPW");
+            sb.Append("?ProjID=" + jsInfo["DataFile"]["ProjID"]);
+            sb.Append("&appUUID=" + jsInfo["DataFile"]["appUUID"]);
+            sb.Append("&dsName=" + jsInfo["DataFile"]["dsName"]);
+            //the doc guid could be null so don't put a null  in the url.
+            string docGUID = jsInfo["DataFile"]["docGUID"];
+            if(docGUID!=null)
+                sb.Append("&docGUID=" + docGUID);
+            string fileNameString = jsInfo["DataFile"]["fileName"];
+            string encodedName = HttpUtility.UrlEncode(fileNameString);
+            sb.Append("&fileName=" + encodedName);
+
+            //sb.Append("52574814-03ac-4345-bb8f-ac4f1e777f4b");
+            
+            //int nPos = fileNameString.LastIndexOf('/');
+            //string rootName = fileNameString.Substring(nPos);
+            string rootName2 = Path.GetFileName(fileNameString);
+            
+            Debug.Print(sb.ToString());
+
+            MyWebRequest myWebRequest = new MyWebRequest();
+
+            status = myWebRequest.SendRequest(sb.ToString(), "GET", "", @"c:\temp\" + rootName2);
+
+            if ((status.StatusCode == HttpStatusCode.OK) && (status.ContentType.Equals("application/octet-stream")))
+            {
+                AddToMessageQueue("WPS>WORK>" + @"c:\temp\" + rootName2);
+                AddToMessageQueue("WPS>LOAD>" + jsonString);
+
+                OpenFileCmd("OPM", @"c:\temp\" + rootName2, true);
+
+            }
+            return rtnString;
+        }
         /// <summary>
         /// gets the file from PW store using the WSG api. 
         /// </summary>
@@ -107,49 +242,60 @@ namespace WPWebSocketsCmd
         /// <param name="client">The client that called this so that the information can be 
         /// passed back.</param>
         /// <returns>the name of the file that was pulled.</returns>
-        public static string GetFileFromWSGByGUID(string url,WPWebSocketsCmd.Server.WPSWebSocketService client)
+        public static string GetFileFromWSGByGUID(string url,WPWebSocketsCmd.Server.WPSWebSocketService client,string targetName)
         {
-            string status="";
+            HttpWebResponse status=null;
             string fileName="";
             try
             {
 
-                if ((null == m_userName)||(m_userName.Length < 1))
-                    SetLoginInfo();
+               // if (null == m_authCode)
+               //     SetLoginInfo();
 
                 MyWebRequest myWebRequest = new MyWebRequest();
-
-                myWebRequest.SetUserInfo(m_userName, m_pwd);
+                //only going to send the auth code as Base64 string 
+                myWebRequest.SetAuthCode(m_authCode);
                 
                 //this will get the file information as a JSON Object Array
-                status = myWebRequest.SendRequest(url, "GET", ""," ");
+                status = myWebRequest.SendRequest(url, "GET", "",targetName);
 
-                JavaScriptSerializer oJS = new JavaScriptSerializer();
-                var stuff = oJS.Deserialize<dynamic>(status);
-                fileName = stuff["instances"][0]["properties"]["FileName"];
-                
-                if (fileName.Length > 0)
-                    client.Send("fetching file " + fileName);
-                else
-                    client.Send("File Not Found");
+                if (status.StatusCode == HttpStatusCode.OK)
+                {
+                    JavaScriptSerializer oJS = new JavaScriptSerializer();
+                    if (status.ContentType.Equals("application/json"))
+                    {
+                        string s;
+                        StreamReader sr = new StreamReader(status.GetResponseStream());
+                        s = sr.ReadToEnd();
+                        sr.Close();
 
-                if(fileName.Length>0)
-                    status = myWebRequest.SendRequest(url, "GET", "/$file", @"c:\temp\" + fileName);
+                        var stuff = oJS.Deserialize<dynamic>(s);
+                        fileName = stuff["instances"][0]["properties"]["FileName"];
 
-                //open the file in mstn: stuff["instances"][0]["properties"]["FileName"]
-                if(fileName.Length>0)
-                    OpenFileCmd("MSTN", @"c:\temp\" + fileName, false);
+                        if (fileName.Length > 0)
+                            client.Send("fetching file " + fileName);
+                        else
+                            client.Send("File Not Found");
+
+                        if (fileName.Length > 0)
+                            status = myWebRequest.SendRequest(url, "GET", "/$file", @"c:\temp\" + fileName);
+
+                        //open the file in mstn: stuff["instances"][0]["properties"]["FileName"]
+                        if (fileName.Length > 0)
+                            OpenFileCmd("MSTN", @"c:\temp\" + fileName, false);
+                    }
+                }
             }
             catch (Exception e) 
             { 
                 Debug.Print(e.Message);
-                Debug.Print("the server returned " + status);
+                Debug.Print("the server returned " + status.ToString());
             }
 
             if (fileName.Length > 2)
                 return fileName;
             else
-                return status;
+                return status.ToString();
         }
         /// <summary>
         /// move components from one group to another.  This is mostly used to put things
@@ -336,6 +482,13 @@ namespace WPWebSocketsCmd
             
             
             return rtnString;
+        }
+
+        internal static string ProcessJSON(string jsonString)
+        {
+            JavaScriptSerializer oJS = new JavaScriptSerializer();
+            var jsInfo = oJS.Deserialize<dynamic>(jsonString);
+            return "processed";
         }
     }
     /// <summary>

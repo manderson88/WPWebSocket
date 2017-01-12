@@ -77,7 +77,21 @@ namespace WPWebSockets.Common
             byte[] bytes = Encoding.UTF8.GetBytes(text);
             Send(WebSocketOpCode.TextFrame, bytes, true);
         }
-
+        public virtual void SendJSON(string text)
+        {
+            byte[] bytes = Encoding.UTF8.GetBytes(text);
+            Send(WebSocketOpCode.JSONFrame, bytes, true);
+        }
+        public virtual void Send(WebSocketOpCode opCode, string text)
+        {
+            if (opCode == WebSocketOpCode.JSONFrame)
+            {
+                byte[] bytes = Encoding.UTF8.GetBytes(text);
+                Send(WebSocketOpCode.JSONFrame, bytes, true);
+            }
+            else
+                Send(text);
+        }
         protected virtual void OnConnectionOpened()
         {
             if (ConnectionOpened != null)

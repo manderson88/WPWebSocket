@@ -93,7 +93,8 @@ namespace WPWebSocketsCmd
                      //foreach (WPWebSockets.Common.WebSocketBase srv in _connections)
                      //    srv.Send("test broadcast");
                     if(Environment.UserInteractive)
-                        Console.ReadKey();
+                        while (null != Console.ReadKey()) { StopServer(); }
+
                     
                     //server.Dispose();
                 }
@@ -115,7 +116,12 @@ namespace WPWebSocketsCmd
         private static void Main(string[] args)
         {
             //IWebSocketLogger logger;// = new WebSocketLogger();
-            
+            if (args.Length < 1)
+            {
+                Console.WriteLine("Required Options:");
+                Console.WriteLine("DEBUG : start the debugger");
+                Console.WriteLine("GUI : Normal starting mode");
+            }
 
             if ((args.Length > 0) && (args[0].Equals("DEBUG")))
                 Debugger.Launch();
